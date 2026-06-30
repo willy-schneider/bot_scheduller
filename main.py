@@ -402,7 +402,7 @@ async def handle_message(update: Update, context: CallbackContext):
 
 # --- Ежедневная рассылка (каждую минуту проверяем, кому пора) ---
 
-async def main():
+def main():
     init_db()
 
     app = Application.builder().token(TOKEN).build()
@@ -414,7 +414,7 @@ async def main():
     app.add_handler(CommandHandler("settime", set_time_command))
     app.add_handler(MessageHandler(filters.TEXT | filters.FORWARDED, handle_message))
 
-    # Настройка и запуск планировщика внутри активного event loop
+    # Планировщик создаём здесь, но не запускаем сразу
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 
     async def check_and_send():
@@ -425,7 +425,7 @@ async def main():
         c = conn.cursor()
         c.execute(
             "SELECT user_id FROM users WHERE reminder_hour = ? AND reminder_minute = ?",
-            (current_hour, current_minute)
+            (current_hour, current_minute),
         )
         user_ids = [row[0] for row in c.fetchall()]
         conn.close()
@@ -439,19 +439,22 @@ async def main():
                 text += "После исполнения удалите командой `/done N`"
                 try:
                     await app.bot.send_message(
-                        chat_id=user_id,
-                        text=text,
-                        parse_mode=ParseMode.MARKDOWN
+                        chat_id=user_id, text=text, parse_mode=ParseMode.MARKDOWN
                     )
                 except Exception as e:
                     logger.error(f"Ошибка отправки {user_id}: {e}")
 
-    scheduler.add_job(check_and_send, 'interval', minutes=1, id='minute_check')
-    scheduler.start()
+    # Колбэк, который запустит планировщик внутри event loop’а приложения
+    async def start_scheduler(_app: Application):
+        scheduler.add_job(check_and_send, "interval", minutes=1, id="minute_check")
+        scheduler.start()
+        logger.info("Планировщик запущен")
+
+    # Регистрируем запуск планировщика на этапе post_init
+    app.add_post_init(start_scheduler)
 
     logger.info("Бот запущен...")
-    await app.run_polling()
-
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
