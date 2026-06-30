@@ -8,7 +8,8 @@ import os
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from telegram import Update, ParseMode
+from telegram.constants import ParseMode
+from telegram.ext import Update
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 
