@@ -451,7 +451,7 @@ def main():
         logger.info("Планировщик запущен")
 
     # Регистрируем запуск планировщика на этапе post_init
-    app.add_post_init(start_scheduler)
+    app.post_init = start_scheduler
 
     logger.info("Бот запущен...")
     app.run_polling()
