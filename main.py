@@ -45,21 +45,14 @@ def init_db():
 
     c = conn.cursor()
 
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-
+    c.execute(f'''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
-
         username TEXT,
-
         full_name TEXT,
-
-        reminder_hour INTEGER DEFAULT ?,
-
-        reminder_minute INTEGER DEFAULT ?,
-
-        timezone TEXT DEFAULT ?
-
-    )''', (DEFAULT_REMINDER_HOUR, DEFAULT_REMINDER_MINUTE, TIMEZONE))
+        reminder_hour INTEGER DEFAULT {int(DEFAULT_REMINDER_HOUR)},
+        reminder_minute INTEGER DEFAULT {DEFAULT_REMINDER_MINUTE},
+        timezone TEXT DEFAULT '{TIMEZONE}'
+    )''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS prayers (
 
