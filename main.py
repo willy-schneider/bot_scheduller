@@ -402,90 +402,56 @@ async def handle_message(update: Update, context: CallbackContext):
 
 # --- Ежедневная рассылка (каждую минуту проверяем, кому пора) ---
 
-def setup_scheduler(app):
-
-    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-
-    async def check_and_send():
-
-        now = datetime.now()
-
-        current_hour = now.hour
-
-        current_minute = now.minute
-
-        conn = sqlite3.connect("prayers.db")
-
-        c = conn.cursor()
-
-        c.execute('''
-
-            SELECT user_id FROM users 
-
-            WHERE reminder_hour = ? AND reminder_minute = ?
-
-        ''', (current_hour, current_minute))
-
-        user_ids = [row[0] for row in c.fetchall()]
-
-        conn.close()
-
-        for user_id in user_ids:
-
-            prayers = get_undone_prayers(user_id)
-
-            if prayers:
-
-                text = "*🕊 Ежедневное напоминание о молитве*\n\nПомолитесь сегодня за эти нужды:\n\n"
-
-                for pid, req, sender in prayers:
-
-                    text += f"`{pid}`. {req}\n\n"
-
-                text += "После исполнения удалите командой `/done N`"
-
-                try:
-
-                    await app.bot.send_message(chat_id=user_id, text=text, parse_mode=ParseMode.MARKDOWN)
-
-                except Exception as e:
-
-                    logger.error(f"Ошибка отправки {user_id}: {e}")
-
-    scheduler.add_job(check_and_send, 'interval', minutes=1, id='minute_check')
-
-    scheduler.start()
-
-    return scheduler
-
-
-
-def main():
-
+async def main():
     init_db()
 
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-
     app.add_handler(CommandHandler("help", help_command))
-
     app.add_handler(CommandHandler("list", list_requests))
-
     app.add_handler(CommandHandler("done", done_command))
-
     app.add_handler(CommandHandler("settime", set_time_command))
-
     app.add_handler(MessageHandler(filters.TEXT | filters.FORWARDED, handle_message))
 
-    setup_scheduler(app)
+    # Настройка и запуск планировщика внутри активного event loop
+    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+
+    async def check_and_send():
+        now = datetime.now()
+        current_hour = now.hour
+        current_minute = now.minute
+        conn = sqlite3.connect("prayers.db")
+        c = conn.cursor()
+        c.execute(
+            "SELECT user_id FROM users WHERE reminder_hour = ? AND reminder_minute = ?",
+            (current_hour, current_minute)
+        )
+        user_ids = [row[0] for row in c.fetchall()]
+        conn.close()
+
+        for user_id in user_ids:
+            prayers = get_undone_prayers(user_id)
+            if prayers:
+                text = "*🕊 Ежедневное напоминание о молитве*\n\nПомолитесь сегодня за эти нужды:\n\n"
+                for pid, req, sender in prayers:
+                    text += f"`{pid}`. {req}\n\n"
+                text += "После исполнения удалите командой `/done N`"
+                try:
+                    await app.bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка отправки {user_id}: {e}")
+
+    scheduler.add_job(check_and_send, 'interval', minutes=1, id='minute_check')
+    scheduler.start()
 
     logger.info("Бот запущен...")
-
-    app.run_polling()
-
+    await app.run_polling()
 
 
 if __name__ == "__main__":
-
-    main()
+    asyncio.run(main())
