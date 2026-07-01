@@ -1,16 +1,18 @@
-import sqlite3
+import os
+import asyncio
 import logging
 from datetime import datetime
-import os
+
+import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Update, BotCommand
-from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
-from telegram.helpers import escape_markdown
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.types import Message, BotCommand
+from aiogram.filters import Command
+from aiogram.utils.formatting import Text
 
 # ========== НАСТРОЙКИ ==========
-TOKEN = os.environ['TOKEN']
-DEFAULT_REMINDER_HOUR = int(os.environ.get('DEFAULT_REMINDER_HOUR', 9))
+TOKEN = os.environ["TOKEN"]
+DEFAULT_REMINDER_HOUR = int(os.environ.get("DEFAULT_REMINDER_HOUR", 9))
 DEFAULT_REMINDER_MINUTE = 0
 TIMEZONE = "Europe/Moscow"
 # ================================
@@ -18,262 +20,314 @@ TIMEZONE = "Europe/Moscow"
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- База данных ---
-def init_db():
-    conn = sqlite3.connect("prayers.db")
-    c = conn.cursor()
-    c.execute(f'''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        full_name TEXT,
-        reminder_hour INTEGER DEFAULT {DEFAULT_REMINDER_HOUR},
-        reminder_minute INTEGER DEFAULT {DEFAULT_REMINDER_MINUTE},
-        timezone TEXT DEFAULT '{TIMEZONE}'
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS prayers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        text TEXT,
-        sender_link TEXT,
-        from_user TEXT,
-        created_at TEXT,
-        FOREIGN KEY(user_id) REFERENCES users(user_id)
-    )''')
-    conn.commit()
-    conn.close()
+# --- База данных (aiosqlite) ---
+DB_NAME = "prayers.db"
 
-def register_user(user_id, username, full_name):
-    conn = sqlite3.connect("prayers.db")
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-              (user_id, username, full_name))
-    conn.commit()
-    conn.close()
 
-def add_prayer(user_id, text, sender_link, from_user):
-    conn = sqlite3.connect("prayers.db")
-    c = conn.cursor()
+async def init_db():
+    """Создаёт таблицы, если их ещё нет."""
+    async with aiosqlite.connect(DB_NAME) as conn:
+        await conn.execute(
+            f"""CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                reminder_hour INTEGER DEFAULT {DEFAULT_REMINDER_HOUR},
+                reminder_minute INTEGER DEFAULT {DEFAULT_REMINDER_MINUTE},
+                timezone TEXT DEFAULT '{TIMEZONE}'
+            )"""
+        )
+        await conn.execute(
+            """CREATE TABLE IF NOT EXISTS prayers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                text TEXT,
+                sender_link TEXT,
+                from_user TEXT,
+                created_at TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )"""
+        )
+        await conn.commit()
+
+
+async def register_user(user_id: int, username: str, full_name: str):
+    async with aiosqlite.connect(DB_NAME) as conn:
+        await conn.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
+            (user_id, username, full_name),
+        )
+        await conn.commit()
+
+
+async def add_prayer(user_id: int, text: str, sender_link: str | None, from_user: str) -> int:
+    """Добавляет нужду и возвращает её id."""
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("INSERT INTO prayers (user_id, text, sender_link, from_user, created_at) VALUES (?, ?, ?, ?, ?)",
-              (user_id, text, sender_link, from_user, created_at))
-    prayer_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return prayer_id
+    async with aiosqlite.connect(DB_NAME) as conn:
+        cursor = await conn.execute(
+            "INSERT INTO prayers (user_id, text, sender_link, from_user, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, text, sender_link, from_user, created_at),
+        )
+        await conn.commit()
+        return cursor.lastrowid
 
-def get_undone_prayers(user_id):
-    conn = sqlite3.connect("prayers.db")
-    c = conn.cursor()
-    c.execute("SELECT id, text, sender_link FROM prayers WHERE user_id = ? ORDER BY created_at", (user_id,))
-    rows = c.fetchall()
-    conn.close()
-    return rows
 
-def delete_prayer(user_id, prayer_id):
-    conn = sqlite3.connect("prayers.db")
-    c = conn.cursor()
-    c.execute("DELETE FROM prayers WHERE id = ? AND user_id = ?", (prayer_id, user_id))
-    affected = c.rowcount
-    conn.commit()
-    conn.close()
-    return affected > 0
+async def get_undone_prayers(user_id: int) -> list:
+    """Возвращает список неисполненных нужд (id, text, sender_link)."""
+    async with aiosqlite.connect(DB_NAME) as conn:
+        cursor = await conn.execute(
+            "SELECT id, text, sender_link FROM prayers WHERE user_id = ? ORDER BY created_at",
+            (user_id,),
+        )
+        return await cursor.fetchall()
 
-def get_all_users_with_undone():
-    conn = sqlite3.connect("prayers.db")
-    c = conn.cursor()
-    c.execute("SELECT DISTINCT user_id FROM prayers")
-    users = [row[0] for row in c.fetchall()]
-    conn.close()
-    return users
 
-# --- Обработчики команд ---
-async def start(update: Update, context: CallbackContext):
-    user = update.effective_user
-    register_user(user.id, user.username, user.full_name)
-    await update.message.reply_text(
-        "🙏 *Молитвенный бот для личного использования*\n\n"
+async def delete_prayer(user_id: int, prayer_id: int) -> bool:
+    """Удаляет нужду. Возвращает True, если что-то было удалено."""
+    async with aiosqlite.connect(DB_NAME) as conn:
+        cursor = await conn.execute(
+            "DELETE FROM prayers WHERE id = ? AND user_id = ?",
+            (prayer_id, user_id),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def get_all_users_with_undone() -> list[int]:
+    """ID всех пользователей, у которых есть неисполненные нужды."""
+    async with aiosqlite.connect(DB_NAME) as conn:
+        cursor = await conn.execute("SELECT DISTINCT user_id FROM prayers")
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+
+# ========== Хендлеры ==========
+router = Router()
+
+
+@router.message(Command("start"))
+async def start_cmd(message: Message):
+    user = message.from_user
+    await register_user(user.id, user.username, user.full_name)
+    await message.answer(
+        "🙏 <b>Молитвенный бот для личного использования</b>\n\n"
         "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
-        "Если вы *пересылаете* сообщение, в конце текста автоматически добавится ссылка на ваш профиль.\n"
+        "Если вы <b>пересылаете</b> сообщение, в конце текста автоматически добавится ссылка на ваш профиль.\n"
         "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
         "Команды:\n"
         "/list — показать список текущих нужд\n"
         "/done <номер> — удалить нужду (исполнена)\n"
         "/help — справка\n"
         "/settime <час> <минута> — установить время напоминания (например /settime 7 30)",
-        parse_mode=ParseMode.MARKDOWN
     )
 
-async def help_command(update: Update, context: CallbackContext):
-    await update.message.reply_text(
-        "📖 *Справка*\n"
+
+@router.message(Command("help"))
+async def help_cmd(message: Message):
+    await message.answer(
+        "📖 <b>Справка</b>\n"
         "/list — список неисполненных нужд\n"
         "/done <номер> — удалить нужду (она больше не будет показываться)\n"
         "/settime <час> <минута> — изменить время напоминания (Московское время)\n"
         "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на вас).",
-        parse_mode=ParseMode.MARKDOWN
     )
 
-async def list_requests(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    prayers = get_undone_prayers(user_id)
+
+@router.message(Command("list"))
+async def list_cmd(message: Message):
+    user_id = message.from_user.id
+    prayers = await get_undone_prayers(user_id)
     if not prayers:
-        await update.message.reply_text("✅ У вас нет активных молитвенных нужд.")
+        await message.answer("✅ У вас нет активных молитвенных нужд.")
         return
 
-    text = "*Ваши текущие молитвенные нужды:*\n\n"
+    lines = ["<b>Ваши текущие молитвенные нужды:</b>", ""]
     for pid, req_text, sender_link in prayers:
-        escaped_text = escape_markdown(req_text, version=2)
-        line = f"`{pid}`. {escaped_text}"
+        # Экранируем HTML-сущности в тексте нужды
+        safe_text = req_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        line = f"<code>{pid}</code>. {safe_text}"
         if sender_link:
             line += f"\n— {sender_link}"
-        text += line + "\n\n"
+        lines.append(line)
+        lines.append("")
 
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
+    await message.answer("\n".join(lines))
 
-async def done_command(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    args = context.args
-    if not args:
-        await update.message.reply_text("Укажите номер нужды: `/done 3`", parse_mode=ParseMode.MARKDOWN_V2)
+
+@router.message(Command("done"))
+async def done_cmd(message: Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Укажите номер нужды: <code>/done 3</code>")
         return
     try:
-        prayer_id = int(args[0])
+        prayer_id = int(args[1])
     except ValueError:
-        await update.message.reply_text("Номер должен быть числом.")
+        await message.answer("Номер должен быть числом.")
         return
-    if delete_prayer(user_id, prayer_id):
-        await update.message.reply_text(f"✅ Нужда #{prayer_id} удалена (молитва исполнена). Слава Богу!")
-    else:
-        await update.message.reply_text(f"❌ Не удалось удалить #{prayer_id}. Возможно, такой нужды нет или она уже была удалена.")
 
-async def set_time_command(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    args = context.args
-    if len(args) != 2:
-        await update.message.reply_text("Используйте: `/settime <час> <минута>`\nПример: `/settime 7 30`", parse_mode=ParseMode.MARKDOWN_V2)
+    if await delete_prayer(user_id, prayer_id):
+        await message.answer(f"✅ Нужда #{prayer_id} удалена (молитва исполнена). Слава Богу!")
+    else:
+        await message.answer(
+            f"❌ Не удалось удалить #{prayer_id}. Возможно, такой нужды нет или она уже была удалена."
+        )
+
+
+@router.message(Command("settime"))
+async def settime_cmd(message: Message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    if len(args) != 3:
+        await message.answer(
+            "Используйте: <code>/settime &lt;час&gt; &lt;минута&gt;</code>\nПример: <code>/settime 7 30</code>"
+        )
         return
     try:
-        hour = int(args[0])
-        minute = int(args[1])
+        hour = int(args[1])
+        minute = int(args[2])
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError
     except ValueError:
-        await update.message.reply_text("Час от 0 до 23, минута от 0 до 59.")
+        await message.answer("Час от 0 до 23, минута от 0 до 59.")
         return
-    conn = sqlite3.connect("prayers.db")
-    c = conn.cursor()
-    c.execute("UPDATE users SET reminder_hour = ?, reminder_minute = ? WHERE user_id = ?", (hour, minute, user_id))
-    conn.commit()
-    conn.close()
-    await update.message.reply_text(f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва).")
 
-async def handle_message(update: Update, context: CallbackContext):
-    user = update.effective_user
-    if not user:
-        return
-    register_user(user.id, user.username, user.full_name)
+    async with aiosqlite.connect(DB_NAME) as conn:
+        await conn.execute(
+            "UPDATE users SET reminder_hour = ?, reminder_minute = ? WHERE user_id = ?",
+            (hour, minute, user_id),
+        )
+        await conn.commit()
 
-    is_forwarded = update.message.forward_from or update.message.forward_sender_name
-
-    if is_forwarded:
-        text = update.message.caption or update.message.text
-        if not text:
-            text = "[Сообщение без текста (фото/аудио/стикер)]"
-        if update.message.forward_from:
-            source = update.message.forward_from.full_name or str(update.message.forward_from.id)
-        else:
-            source = update.message.forward_sender_name
-        from_user = f"переслано от {source} (добавил {user.full_name or user.username})"
-        sender_link = f"[{user.full_name or user.username or 'пользователь'}](tg://user?id={user.id})"
-    else:
-        text = update.message.text
-        if not text:
-            await update.message.reply_text("Пожалуйста, отправьте текст или перешлите сообщение.")
-            return
-        from_user = user.full_name or user.username or str(user.id)
-        sender_link = None
-
-    prayer_id = add_prayer(user.id, text, sender_link, from_user)
-    preview = text[:150] + "..." if len(text) > 150 else text
-    await update.message.reply_text(
-        f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
-        f"*Текст:* {preview}\n\n"
-        f"Я напомню о ней в ваше время молитвы.",
-        parse_mode=ParseMode.MARKDOWN
+    await message.answer(
+        f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва)."
     )
 
-# --- Установка меню команд ---
-async def set_commands(app: Application):
-    commands = [
-        BotCommand("start", "Начать работу с ботом"),
-        BotCommand("list", "Показать список молитвенных нужд"),
-        BotCommand("done", "Удалить нужду (исполнена)"),
-        BotCommand("settime", "Установить время напоминания"),
-        BotCommand("help", "Помощь"),
-    ]
-    await app.bot.set_my_commands(commands)
-    logger.info("Меню команд установлено")
 
-# --- Ежедневная рассылка ---
-def main():
-    init_db()
-    app = Application.builder().token(TOKEN).build()
+# --- Обработка текстовых и пересланных сообщений ---
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("list", list_requests))
-    app.add_handler(CommandHandler("done", done_command))
-    app.add_handler(CommandHandler("settime", set_time_command))
-    app.add_handler(MessageHandler(filters.TEXT | filters.FORWARDED, handle_message))
+@router.message(F.forward_date)  # любое пересланное сообщение
+async def handle_forwarded(message: Message):
+    user = message.from_user
+    await register_user(user.id, user.username, user.full_name)
 
-    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+    text = message.caption or message.text
+    if not text:
+        text = "[Сообщение без текста (фото/аудио/стикер)]"
 
-    async def check_and_send():
-        now = datetime.now()
-        current_hour = now.hour
-        current_minute = now.minute
-        conn = sqlite3.connect("prayers.db")
-        c = conn.cursor()
-        c.execute(
+    # Определяем, от кого переслано
+    if message.forward_from:
+        source = message.forward_from.full_name or str(message.forward_from.id)
+    elif message.forward_sender_name:
+        source = message.forward_sender_name
+    else:
+        source = "неизвестный источник"
+
+    from_user = f"переслано от {source} (добавил {user.full_name or user.username})"
+    sender_link = f'<a href="tg://user?id={user.id}">{user.full_name or user.username or "пользователь"}</a>'
+
+    prayer_id = await add_prayer(user.id, text, sender_link, from_user)
+    preview = text[:150] + "..." if len(text) > 150 else text
+    safe_preview = preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    await message.answer(
+        f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
+        f"<b>Текст:</b> {safe_preview}\n\n"
+        f"Я напомню о ней в ваше время молитвы."
+    )
+
+
+@router.message(F.text, ~F.forward_date)  # обычное текстовое сообщение (не пересланное)
+async def handle_plain_text(message: Message):
+    user = message.from_user
+    await register_user(user.id, user.username, user.full_name)
+
+    text = message.text
+    if not text:
+        await message.answer("Пожалуйста, отправьте текст или перешлите сообщение.")
+        return
+
+    from_user = user.full_name or user.username or str(user.id)
+    prayer_id = await add_prayer(user.id, text, sender_link=None, from_user=from_user)
+    preview = text[:150] + "..." if len(text) > 150 else text
+    safe_preview = preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    await message.answer(
+        f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
+        f"<b>Текст:</b> {safe_preview}\n\n"
+        f"Я напомню о ней в ваше время молитвы."
+    )
+
+
+# ========== Планировщик ==========
+async def check_and_send(bot: Bot):
+    """Ежеминутная проверка: нужно ли отправить кому-то напоминание."""
+    now = datetime.now()
+    current_hour, current_minute = now.hour, now.minute
+
+    async with aiosqlite.connect(DB_NAME) as conn:
+        cursor = await conn.execute(
             "SELECT user_id FROM users WHERE reminder_hour = ? AND reminder_minute = ?",
             (current_hour, current_minute),
         )
-        user_ids = [row[0] for row in c.fetchall()]
-        conn.close()
+        user_ids = [row[0] for row in await cursor.fetchall()]
 
-        for user_id in user_ids:
-            prayers = get_undone_prayers(user_id)
-            if prayers:
-                text = "*🕊 Ежедневное напоминание о молитве*\n\nПомолитесь сегодня за эти нужды:\n\n"
-                for pid, req_text, sender_link in prayers:
-                    escaped_text = escape_markdown(req_text, version=2)
-                    line = f"`{pid}`. {escaped_text}"
-                    if sender_link:
-                        line += f"\n— {sender_link}"
-                    text += line + "\n\n"
-                text += "После исполнения удалите командой `/done N`"
-                try:
-                    await app.bot.send_message(
-                        chat_id=user_id, text=text, parse_mode=ParseMode.MARKDOWN_V2
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка отправки {user_id}: {e}")
+    for user_id in user_ids:
+        prayers = await get_undone_prayers(user_id)
+        if not prayers:
+            continue
 
-    async def start_scheduler(_app: Application):
-        # Устанавливаем меню команд
-        await set_commands(_app)
-        # Запускаем планировщик
-        scheduler.add_job(check_and_send, "interval", minutes=1, id="minute_check")
+        lines = ["<b>🕊 Ежедневное напоминание о молитве</b>", "", "Помолитесь сегодня за эти нужды:", ""]
+        for pid, req_text, sender_link in prayers:
+            safe_text = req_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            line = f"<code>{pid}</code>. {safe_text}"
+            if sender_link:
+                line += f"\n— {sender_link}"
+            lines.append(line)
+            lines.append("")
+        lines.append("После исполнения удалите командой <code>/done N</code>")
+
+        try:
+            await bot.send_message(chat_id=user_id, text="\n".join(lines))
+        except Exception as e:
+            logger.error(f"Ошибка отправки {user_id}: {e}")
+
+
+# ========== Запуск ==========
+async def main():
+    await init_db()
+
+    bot = Bot(token=TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+
+    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+
+    # Установка меню команд и запуск планировщика при старте
+    @dp.startup()
+    async def on_startup():
+        commands = [
+            BotCommand(command="start", description="Начать работу с ботом"),
+            BotCommand(command="list", description="Показать список молитвенных нужд"),
+            BotCommand(command="done", description="Удалить нужду (исполнена)"),
+            BotCommand(command="settime", description="Установить время напоминания"),
+            BotCommand(command="help", description="Помощь"),
+        ]
+        await bot.set_my_commands(commands)
+        logger.info("Меню команд установлено")
+
+        scheduler.add_job(check_and_send, "interval", minutes=1, args=[bot], id="minute_check")
         scheduler.start()
         logger.info("Планировщик запущен")
 
-    app.post_init = start_scheduler
+    # Остановка планировщика при завершении
+    @dp.shutdown()
+    async def on_shutdown():
+        scheduler.shutdown(wait=False)
+        logger.info("Планировщик остановлен")
 
     logger.info("Бот запущен...")
-    app.run_polling()
+    await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    main()
-
-
-
+    asyncio.run(main())
