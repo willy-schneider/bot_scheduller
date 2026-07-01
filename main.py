@@ -6,7 +6,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
-from telegram.utils.helpers import escape_markdown
+from telegram.helpers import escape_markdown
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ['TOKEN']
