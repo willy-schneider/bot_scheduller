@@ -14,12 +14,15 @@ TOKEN = os.environ["TOKEN"]
 DEFAULT_REMINDER_HOUR = int(os.environ.get("DEFAULT_REMINDER_HOUR", 9))
 DEFAULT_REMINDER_MINUTE = 0
 TIMEZONE = "Europe/Moscow"
+
+# Общее хранилище (persistent storage)
+SHARED_DIR = os.environ.get("SHARED_DIR", "/app/shared")
+os.makedirs(SHARED_DIR, exist_ok=True)   # создаём папку, если её ещё нет
+DB_NAME = os.path.join(SHARED_DIR, "prayers.db")
 # ================================
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-DB_NAME = "prayers.db"
 
 # --- База данных (aiosqlite) ---
 async def init_db():
