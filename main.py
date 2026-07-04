@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-import html  # fix: для безопасного экранирования
+import html
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -23,6 +23,8 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 DB_NAME = "prayers.db"
+
+print("QUQUQUQUQUQU!!!!!!!!!!!!!!!!!!1")
 
 # ---------- База данных ----------
 async def init_db():
@@ -88,12 +90,11 @@ async def delete_prayer(user_id: int, prayer_id: int) -> bool:
 # ---------- Хендлеры ----------
 router = Router()
 
-# fix: убраны треугольные скобки из описаний команд
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     user = message.from_user
     await register_user(user.id, user.username, user.full_name)
-    # Текст без <>, которые могли бы интерпретироваться как HTML-теги
+    # ВСЕ треугольные скобки убраны — описания команд без <>
     text = (
         "🙏 <b>Молитвенный бот для личного использования</b>\n\n"
         "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
@@ -101,47 +102,30 @@ async def start_cmd(message: Message):
         "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
         "Команды:\n"
         "/list — показать список текущих нужд\n"
-        "/done <b>номер</b> — удалить нужду (исполнена)\n"   # fix: <b>номер</b>, без <номер>
+        "/done номер — удалить нужду (исполнена)\n"
         "/help — справка\n"
-        "/settime <b>час минута</b> — установить время напоминания (например /settime 7 30)"  # fix
+        "/settime час минута — установить время напоминания (например /settime 7 30)"
     )
     try:
         await message.answer(text)
     except TelegramAPIError as e:
         logger.error(f"Ошибка отправки start: {e}")
-        # fallback без форматирования
-        await message.answer(
-            "Молитвенный бот для личного использования.\n\n"
-            "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
-            "Если вы пересылаете сообщение, в конце текста автоматически добавится ссылка на профиль автора.\n"
-            "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
-            "Команды:\n"
-            "/list — показать список текущих нужд\n"
-            "/done номер — удалить нужду (исполнена)\n"
-            "/help — справка\n"
-            "/settime час минута — установить время напоминания (например /settime 7 30)"
-        )
+        await message.answer("Произошла ошибка. Попробуйте позже.")
 
 @router.message(Command("help"))
 async def help_cmd(message: Message):
     text = (
         "📖 <b>Справка</b>\n"
         "/list — список неисполненных нужд\n"
-        "/done <b>номер</b> — удалить нужду (она больше не будет показываться)\n"  # fix
-        "/settime <b>час минута</b> — изменить время напоминания (Московское время)\n"  # fix
+        "/done номер — удалить нужду (она больше не будет показываться)\n"
+        "/settime час минута — изменить время напоминания (Московское время)\n"
         "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на автора)."
     )
     try:
         await message.answer(text)
     except TelegramAPIError as e:
         logger.error(f"Ошибка отправки help: {e}")
-        await message.answer(
-            "Справка:\n"
-            "/list — список неисполненных нужд\n"
-            "/done номер — удалить нужду\n"
-            "/settime час минута — изменить время\n"
-            "Пересылайте сообщения, чтобы добавить нужду."
-        )
+        await message.answer("Произошла ошибка. Попробуйте позже.")
 
 @router.message(Command("list"))
 async def list_cmd(message: Message):
@@ -159,11 +143,9 @@ async def list_cmd(message: Message):
 
     lines = ["<b>Ваши текущие молитвенные нужды:</b>", ""]
     for pid, req_text, sender_link in prayers:
-        # fix: используем html.escape для полного экранирования
         safe_text = html.escape(req_text)
         line = f"<code>{pid}</code>. {safe_text}"
         if sender_link:
-            # sender_link уже безопасен (содержит экранированное имя)
             line += f"\n— {sender_link}"
         lines.append(line)
         lines.append("")
@@ -183,7 +165,6 @@ async def done_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 2:
-        # fix: убраны треугольные скобки
         await message.answer("Укажите номер нужды: <code>/done 3</code>")
         return
     try:
@@ -211,7 +192,7 @@ async def settime_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) != 3:
-        # fix: убраны треугольные скобки
+        # Здесь <code> безопасен, потому что «час минута» не содержит <
         await message.answer(
             "Используйте: <code>/settime час минута</code>\nПример: <code>/settime 7 30</code>"
         )
@@ -268,7 +249,6 @@ async def handle_forwarded(message: Message):
         return
 
     preview = text[:150] + "..." if len(text) > 150 else text
-    # fix: экранируем preview перед вставкой в HTML
     safe_preview = html.escape(preview)
     try:
         await message.answer(
@@ -336,13 +316,13 @@ async def check_and_send(bot: Bot):
 
         lines = ["<b>🕊 Ежедневное напоминание о молитве</b>", "", "Помолитесь сегодня за эти нужды:", ""]
         for pid, req_text, sender_link in prayers:
-            safe_text = html.escape(req_text)  # fix: полное экранирование
+            safe_text = html.escape(req_text)
             line = f"<code>{pid}</code>. {safe_text}"
             if sender_link:
                 line += f"\n— {sender_link}"
             lines.append(line)
             lines.append("")
-        lines.append("После исполнения удалите командой <code>/done N</code>")
+        lines.append("После исполнения удалите командой <code>/done номер</code>")  # без < >
 
         full_message = "\n".join(lines)
         try:
@@ -355,8 +335,6 @@ async def check_and_send(bot: Bot):
 # ---------- Запуск ----------
 async def main():
     await init_db()
-
-    # Устанавливаем режим HTML по умолчанию для всех сообщений
     bot = Bot(token=TOKEN, parse_mode="HTML")
     dp = Dispatcher()
     dp.include_router(router)
