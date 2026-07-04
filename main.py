@@ -3,14 +3,11 @@ import asyncio
 import logging
 from datetime import datetime
 
-from zoneinfo import ZoneInfo
-
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, BotCommand
 from aiogram.filters import Command
-from aiogram.enums import ParseMode  # ← импортируем ParseMode
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ["TOKEN"]
@@ -22,14 +19,10 @@ TIMEZONE = "Europe/Moscow"
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === Новое ===
-SHARED_DIR = os.environ.get("SHARED_DIR", "/app/shared")
-DB_NAME = os.path.join(SHARED_DIR, "prayers.db")
-# =============
+DB_NAME = "prayers.db"
 
-
+# --- База данных (aiosqlite) ---
 async def init_db():
-    os.makedirs(SHARED_DIR, exist_ok=True)  # <- создаст папку, если её нет
     async with aiosqlite.connect(DB_NAME) as conn:
         await conn.execute(
             f"""CREATE TABLE IF NOT EXISTS users (
@@ -54,7 +47,6 @@ async def init_db():
         )
         await conn.commit()
 
-
 async def register_user(user_id: int, username: str, full_name: str):
     async with aiosqlite.connect(DB_NAME) as conn:
         await conn.execute(
@@ -62,7 +54,6 @@ async def register_user(user_id: int, username: str, full_name: str):
             (user_id, username, full_name),
         )
         await conn.commit()
-
 
 async def add_prayer(user_id: int, text: str, sender_link: str | None, from_user: str) -> int:
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -74,7 +65,6 @@ async def add_prayer(user_id: int, text: str, sender_link: str | None, from_user
         await conn.commit()
         return cursor.lastrowid
 
-
 async def get_undone_prayers(user_id: int) -> list:
     async with aiosqlite.connect(DB_NAME) as conn:
         cursor = await conn.execute(
@@ -82,7 +72,6 @@ async def get_undone_prayers(user_id: int) -> list:
             (user_id,),
         )
         return await cursor.fetchall()
-
 
 async def delete_prayer(user_id: int, prayer_id: int) -> bool:
     async with aiosqlite.connect(DB_NAME) as conn:
@@ -93,17 +82,8 @@ async def delete_prayer(user_id: int, prayer_id: int) -> bool:
         await conn.commit()
         return cursor.rowcount > 0
 
-
-async def get_all_users_with_undone() -> list[int]:
-    async with aiosqlite.connect(DB_NAME) as conn:
-        cursor = await conn.execute("SELECT DISTINCT user_id FROM prayers")
-        rows = await cursor.fetchall()
-        return [row[0] for row in rows]
-
-
 # ========== Хендлеры ==========
 router = Router()
-
 
 @router.message(Command("start"))
 async def start_cmd(message: Message):
@@ -112,16 +92,15 @@ async def start_cmd(message: Message):
     await message.answer(
         "🙏 <b>Молитвенный бот для личного использования</b>\n\n"
         "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
-        "Если вы <b>пересылаете</b> сообщение, в конце текста автоматически добавится ссылка на ваш профиль.\n"
+        "Если вы <b>пересылаете</b> сообщение, в конце текста автоматически добавится ссылка на профиль автора.\n"
         "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
         "Команды:\n"
         "/list — показать список текущих нужд\n"
         "/done <номер> — удалить нужду (исполнена)\n"
         "/help — справка\n"
         "/settime <час> <минута> — установить время напоминания (например /settime 7 30)",
-        parse_mode=ParseMode.HTML,  # ← добавлено
+        parse_mode="HTML",
     )
-
 
 @router.message(Command("help"))
 async def help_cmd(message: Message):
@@ -130,10 +109,9 @@ async def help_cmd(message: Message):
         "/list — список неисполненных нужд\n"
         "/done <номер> — удалить нужду (она больше не будет показываться)\n"
         "/settime <час> <минута> — изменить время напоминания (Московское время)\n"
-        "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на вас).",
-        parse_mode=ParseMode.HTML,  # ← добавлено
+        "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на автора).",
+        parse_mode="HTML",
     )
-
 
 @router.message(Command("list"))
 async def list_cmd(message: Message):
@@ -145,7 +123,6 @@ async def list_cmd(message: Message):
 
     lines = ["<b>Ваши текущие молитвенные нужды:</b>", ""]
     for pid, req_text, sender_link in prayers:
-        # Экранируем HTML-сущности в тексте нужды
         safe_text = req_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         line = f"<code>{pid}</code>. {safe_text}"
         if sender_link:
@@ -153,15 +130,14 @@ async def list_cmd(message: Message):
         lines.append(line)
         lines.append("")
 
-    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)  # ← добавлено
-
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 @router.message(Command("done"))
 async def done_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Укажите номер нужды: <code>/done 3</code>", parse_mode=ParseMode.HTML)
+        await message.answer("Укажите номер нужды: <code>/done 3</code>", parse_mode="HTML")
         return
     try:
         prayer_id = int(args[1])
@@ -176,7 +152,6 @@ async def done_cmd(message: Message):
             f"❌ Не удалось удалить #{prayer_id}. Возможно, такой нужды нет или она уже была удалена."
         )
 
-
 @router.message(Command("settime"))
 async def settime_cmd(message: Message):
     user_id = message.from_user.id
@@ -184,7 +159,7 @@ async def settime_cmd(message: Message):
     if len(args) != 3:
         await message.answer(
             "Используйте: <code>/settime &lt;час&gt; &lt;минута&gt;</code>\nПример: <code>/settime 7 30</code>",
-            parse_mode=ParseMode.HTML,  # ← добавлено
+            parse_mode="HTML",
         )
         return
     try:
@@ -204,13 +179,11 @@ async def settime_cmd(message: Message):
         await conn.commit()
 
     await message.answer(
-        f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва)."
+        f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва).",
     )
 
-
-# --- Обработка текстовых и пересланных сообщений ---
-
-@router.message(F.forward_date)  # любое пересланное сообщение
+# --- Обработка пересланных сообщений ---
+@router.message(F.forward_date)
 async def handle_forwarded(message: Message):
     user = message.from_user
     await register_user(user.id, user.username, user.full_name)
@@ -219,16 +192,16 @@ async def handle_forwarded(message: Message):
     if not text:
         text = "[Сообщение без текста (фото/аудио/стикер)]"
 
-    # Определяем, от кого переслано (совместимость с разными версиями aiogram)
+    # Определяем, от кого переслано
     if message.forward_from:
         source = message.forward_from.full_name or str(message.forward_from.id)
-    elif message.forward_sender_name:
-        source = message.forward_sender_name
+        # Ссылка на исходного отправителя (тот, от кого переслано)
+        sender_link = f'<a href="tg://user?id={message.forward_from.id}">{source}</a>'
     else:
-        source = "неизвестный источник"
+        source = message.forward_sender_name or "неизвестный источник"
+        sender_link = None  # анонимная пересылка — ссылку не даём
 
     from_user = f"переслано от {source} (добавил {user.full_name or user.username})"
-    sender_link = f'<a href="tg://user?id={user.id}">{user.full_name or user.username or "пользователь"}</a>'
 
     prayer_id = await add_prayer(user.id, text, sender_link, from_user)
     preview = text[:150] + "..." if len(text) > 150 else text
@@ -237,11 +210,11 @@ async def handle_forwarded(message: Message):
         f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
         f"<b>Текст:</b> {safe_preview}\n\n"
         f"Я напомню о ней в ваше время молитвы.",
-        parse_mode=ParseMode.HTML,  # ← добавлено
+        parse_mode="HTML",
     )
 
-
-@router.message(F.text, ~F.forward_date)  # обычное текстовое сообщение
+# --- Обработка обычных текстовых сообщений ---
+@router.message(F.text, ~F.forward_date)
 async def handle_plain_text(message: Message):
     user = message.from_user
     await register_user(user.id, user.username, user.full_name)
@@ -259,14 +232,12 @@ async def handle_plain_text(message: Message):
         f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
         f"<b>Текст:</b> {safe_preview}\n\n"
         f"Я напомню о ней в ваше время молитвы.",
-        parse_mode=ParseMode.HTML,  # ← добавлено
+        parse_mode="HTML",
     )
-
 
 # ========== Планировщик ==========
 async def check_and_send(bot: Bot):
-    """Ежеминутная проверка: нужно ли отправить кому-то напоминание."""
-    now = datetime.now(ZoneInfo(TIMEZONE))
+    now = datetime.now()
     current_hour, current_minute = now.hour, now.minute
 
     async with aiosqlite.connect(DB_NAME) as conn:
@@ -292,14 +263,9 @@ async def check_and_send(bot: Bot):
         lines.append("После исполнения удалите командой <code>/done N</code>")
 
         try:
-            await bot.send_message(
-                chat_id=user_id,
-                text="\n".join(lines),
-                parse_mode=ParseMode.HTML,  # ← добавлено
-            )
+            await bot.send_message(chat_id=user_id, text="\n".join(lines), parse_mode="HTML")
         except Exception as e:
             logger.error(f"Ошибка отправки {user_id}: {e}")
-
 
 # ========== Запуск ==========
 async def main():
@@ -334,7 +300,6 @@ async def main():
 
     logger.info("Бот запущен...")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
