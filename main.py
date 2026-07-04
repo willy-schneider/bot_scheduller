@@ -2,29 +2,28 @@ import os
 import asyncio
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, BotCommand
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramAPIError
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ["TOKEN"]
 DEFAULT_REMINDER_HOUR = int(os.environ.get("DEFAULT_REMINDER_HOUR", 9))
 DEFAULT_REMINDER_MINUTE = 0
 TIMEZONE = "Europe/Moscow"
-
-# Общее хранилище (persistent storage)
-SHARED_DIR = os.environ.get("SHARED_DIR", "/app/shared")
-os.makedirs(SHARED_DIR, exist_ok=True)   # создаём папку, если её ещё нет
-DB_NAME = os.path.join(SHARED_DIR, "prayers.db")
 # ================================
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- База данных (aiosqlite) ---
+DB_NAME = "prayers.db"
+
+# ---------- База данных ----------
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as conn:
         await conn.execute(
@@ -85,62 +84,87 @@ async def delete_prayer(user_id: int, prayer_id: int) -> bool:
         await conn.commit()
         return cursor.rowcount > 0
 
-# ========== Хендлеры ==========
+# ---------- Хендлеры ----------
 router = Router()
 
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     user = message.from_user
     await register_user(user.id, user.username, user.full_name)
-    await message.answer(
+    # Экранируем все < и > в тексте, чтобы они не конфликтовали с HTML-режимом
+    safe_text = (
         "🙏 <b>Молитвенный бот для личного использования</b>\n\n"
         "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
         "Если вы <b>пересылаете</b> сообщение, в конце текста автоматически добавится ссылка на профиль автора.\n"
         "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
         "Команды:\n"
         "/list — показать список текущих нужд\n"
-        "/done <номер> — удалить нужду (исполнена)\n"
+        "/done &lt;номер&gt; — удалить нужду (исполнена)\n"
         "/help — справка\n"
-        "/settime <час> <минута> — установить время напоминания (например /settime 7 30)",
-        parse_mode="HTML",
+        "/settime &lt;час&gt; &lt;минута&gt; — установить время напоминания (например /settime 7 30)"
     )
+    try:
+        await message.answer(safe_text)
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка отправки start: {e}")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
 
 @router.message(Command("help"))
 async def help_cmd(message: Message):
-    await message.answer(
+    safe_text = (
         "📖 <b>Справка</b>\n"
         "/list — список неисполненных нужд\n"
-        "/done <номер> — удалить нужду (она больше не будет показываться)\n"
-        "/settime <час> <минута> — изменить время напоминания (Московское время)\n"
-        "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на автора).",
-        parse_mode="HTML",
+        "/done &lt;номер&gt; — удалить нужду (она больше не будет показываться)\n"
+        "/settime &lt;час&gt; &lt;минута&gt; — изменить время напоминания (Московское время)\n"
+        "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на автора)."
     )
+    try:
+        await message.answer(safe_text)
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка отправки help: {e}")
+        await message.answer("Произошла ошибка. Попробуйте позже.")
 
 @router.message(Command("list"))
 async def list_cmd(message: Message):
     user_id = message.from_user.id
-    prayers = await get_undone_prayers(user_id)
+    try:
+        prayers = await get_undone_prayers(user_id)
+    except Exception as e:
+        logger.error(f"Ошибка получения списка нужд: {e}")
+        await message.answer("⚠️ Не удалось получить список нужд.")
+        return
+
     if not prayers:
         await message.answer("✅ У вас нет активных молитвенных нужд.")
         return
 
     lines = ["<b>Ваши текущие молитвенные нужды:</b>", ""]
     for pid, req_text, sender_link in prayers:
-        safe_text = req_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Экранируем текст нужды
+        safe_text = (req_text
+                     .replace("&", "&amp;")
+                     .replace("<", "&lt;")
+                     .replace(">", "&gt;"))
         line = f"<code>{pid}</code>. {safe_text}"
         if sender_link:
+            # sender_link уже содержит экранированное имя (см. handle_forwarded)
             line += f"\n— {sender_link}"
         lines.append(line)
         lines.append("")
-
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    full_message = "\n".join(lines)
+    try:
+        await message.answer(full_message)
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка отправки списка: {e}")
+        # При ошибке отправляем без форматирования
+        await message.answer("⚠️ Не удалось отобразить список из-за ошибки форматирования.")
 
 @router.message(Command("done"))
 async def done_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Укажите номер нужды: <code>/done 3</code>", parse_mode="HTML")
+        await message.answer("Укажите номер нужды: <code>/done 3</code>")
         return
     try:
         prayer_id = int(args[1])
@@ -148,7 +172,14 @@ async def done_cmd(message: Message):
         await message.answer("Номер должен быть числом.")
         return
 
-    if await delete_prayer(user_id, prayer_id):
+    try:
+        deleted = await delete_prayer(user_id, prayer_id)
+    except Exception as e:
+        logger.error(f"Ошибка удаления нужды: {e}")
+        await message.answer("⚠️ Не удалось выполнить операцию.")
+        return
+
+    if deleted:
         await message.answer(f"✅ Нужда #{prayer_id} удалена (молитва исполнена). Слава Богу!")
     else:
         await message.answer(
@@ -161,8 +192,7 @@ async def settime_cmd(message: Message):
     args = message.text.split()
     if len(args) != 3:
         await message.answer(
-            "Используйте: <code>/settime &lt;час&gt; &lt;минута&gt;</code>\nПример: <code>/settime 7 30</code>",
-            parse_mode="HTML",
+            "Используйте: <code>/settime &lt;час&gt; &lt;минута&gt;</code>\nПример: <code>/settime 7 30</code>"
         )
         return
     try:
@@ -174,18 +204,25 @@ async def settime_cmd(message: Message):
         await message.answer("Час от 0 до 23, минута от 0 до 59.")
         return
 
-    async with aiosqlite.connect(DB_NAME) as conn:
-        await conn.execute(
-            "UPDATE users SET reminder_hour = ?, reminder_minute = ? WHERE user_id = ?",
-            (hour, minute, user_id),
-        )
-        await conn.commit()
+    try:
+        async with aiosqlite.connect(DB_NAME) as conn:
+            await conn.execute(
+                "UPDATE users SET reminder_hour = ?, reminder_minute = ? WHERE user_id = ?",
+                (hour, minute, user_id),
+            )
+            await conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка установки времени: {e}")
+        await message.answer("⚠️ Не удалось установить время.")
+        return
 
-    await message.answer(
-        f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва).",
-    )
+    await message.answer(f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва).")
 
 # --- Обработка пересланных сообщений ---
+def safe_html_name(name: str) -> str:
+    """Экранирует спецсимволы для безопасной вставки в HTML."""
+    return name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 @router.message(F.forward_date)
 async def handle_forwarded(message: Message):
     user = message.from_user
@@ -195,26 +232,35 @@ async def handle_forwarded(message: Message):
     if not text:
         text = "[Сообщение без текста (фото/аудио/стикер)]"
 
-    # Определяем, от кого переслано
-    if message.forward_from:
-        source = message.forward_from.full_name or str(message.forward_from.id)
-        # Ссылка на исходного отправителя (тот, от кого переслано)
-        sender_link = f'<a href="tg://user?id={message.forward_from.id}">{source}</a>'
-    else:
-        source = message.forward_sender_name or "неизвестный источник"
-        sender_link = None  # анонимная пересылка — ссылку не даём
+    sender_link = None
+    if message.forward_from and message.forward_from.id:
+        # Экранируем имя автора
+        source_name = safe_html_name(message.forward_from.full_name or str(message.forward_from.id))
+        sender_link = f'<a href="tg://user?id={message.forward_from.id}">{source_name}</a>'
+    elif message.forward_sender_name:
+        # анонимная пересылка — оставляем None
+        pass
 
-    from_user = f"переслано от {source} (добавил {user.full_name or user.username})"
+    from_user = f"переслано от {safe_html_name(message.forward_sender_name or 'неизвестный источник')} (добавил {safe_html_name(user.full_name or user.username or '')})"
 
-    prayer_id = await add_prayer(user.id, text, sender_link, from_user)
+    try:
+        prayer_id = await add_prayer(user.id, text, sender_link, from_user)
+    except Exception as e:
+        logger.error(f"Ошибка добавления нужды: {e}")
+        await message.answer("⚠️ Не удалось сохранить нужду.")
+        return
+
     preview = text[:150] + "..." if len(text) > 150 else text
-    safe_preview = preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    await message.answer(
-        f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
-        f"<b>Текст:</b> {safe_preview}\n\n"
-        f"Я напомню о ней в ваше время молитвы.",
-        parse_mode="HTML",
-    )
+    safe_preview = safe_html_name(preview)
+    try:
+        await message.answer(
+            f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
+            f"<b>Текст:</b> {safe_preview}\n\n"
+            f"Я напомню о ней в ваше время молитвы."
+        )
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка отправки подтверждения: {e}")
+        await message.answer("Нужда сохранена, но возникла ошибка при отображении.")
 
 # --- Обработка обычных текстовых сообщений ---
 @router.message(F.text, ~F.forward_date)
@@ -227,20 +273,30 @@ async def handle_plain_text(message: Message):
         await message.answer("Пожалуйста, отправьте текст или перешлите сообщение.")
         return
 
-    from_user = user.full_name or user.username or str(user.id)
-    prayer_id = await add_prayer(user.id, text, sender_link=None, from_user=from_user)
-    preview = text[:150] + "..." if len(text) > 150 else text
-    safe_preview = preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    await message.answer(
-        f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
-        f"<b>Текст:</b> {safe_preview}\n\n"
-        f"Я напомню о ней в ваше время молитвы.",
-        parse_mode="HTML",
-    )
+    from_user = safe_html_name(user.full_name or user.username or str(user.id))
 
-# ========== Планировщик ==========
+    try:
+        prayer_id = await add_prayer(user.id, text, sender_link=None, from_user=from_user)
+    except Exception as e:
+        logger.error(f"Ошибка добавления нужды: {e}")
+        await message.answer("⚠️ Не удалось сохранить нужду.")
+        return
+
+    preview = text[:150] + "..." if len(text) > 150 else text
+    safe_preview = safe_html_name(preview)
+    try:
+        await message.answer(
+            f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
+            f"<b>Текст:</b> {safe_preview}\n\n"
+            f"Я напомню о ней в ваше время молитвы."
+        )
+    except TelegramAPIError as e:
+        logger.error(f"Ошибка отправки подтверждения: {e}")
+        await message.answer("Нужда сохранена, но возникла ошибка при отображении.")
+
+# ---------- Планировщик ----------
 async def check_and_send(bot: Bot):
-    now = datetime.now()
+    now = datetime.now(ZoneInfo(TIMEZONE))
     current_hour, current_minute = now.hour, now.minute
 
     async with aiosqlite.connect(DB_NAME) as conn:
@@ -251,13 +307,22 @@ async def check_and_send(bot: Bot):
         user_ids = [row[0] for row in await cursor.fetchall()]
 
     for user_id in user_ids:
-        prayers = await get_undone_prayers(user_id)
+        try:
+            prayers = await get_undone_prayers(user_id)
+        except Exception as e:
+            logger.error(f"Ошибка получения нужд для {user_id}: {e}")
+            continue
+
         if not prayers:
             continue
 
         lines = ["<b>🕊 Ежедневное напоминание о молитве</b>", "", "Помолитесь сегодня за эти нужды:", ""]
         for pid, req_text, sender_link in prayers:
-            safe_text = req_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            # Экранируем текст нужды
+            safe_text = (req_text
+                         .replace("&", "&amp;")
+                         .replace("<", "&lt;")
+                         .replace(">", "&gt;"))
             line = f"<code>{pid}</code>. {safe_text}"
             if sender_link:
                 line += f"\n— {sender_link}"
@@ -265,16 +330,20 @@ async def check_and_send(bot: Bot):
             lines.append("")
         lines.append("После исполнения удалите командой <code>/done N</code>")
 
+        full_message = "\n".join(lines)
         try:
-            await bot.send_message(chat_id=user_id, text="\n".join(lines), parse_mode="HTML")
+            await bot.send_message(chat_id=user_id, text=full_message)
+        except TelegramAPIError as e:
+            logger.error(f"Ошибка отправки напоминания {user_id}: {e}")
         except Exception as e:
-            logger.error(f"Ошибка отправки {user_id}: {e}")
+            logger.error(f"Неизвестная ошибка отправки {user_id}: {e}")
 
-# ========== Запуск ==========
+# ---------- Запуск ----------
 async def main():
     await init_db()
 
-    bot = Bot(token=TOKEN)
+    # Устанавливаем режим HTML по умолчанию для всех сообщений
+    bot = Bot(token=TOKEN, parse_mode="HTML")
     dp = Dispatcher()
     dp.include_router(router)
 
@@ -306,3 +375,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
