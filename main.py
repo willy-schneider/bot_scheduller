@@ -11,6 +11,7 @@ from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, BotCommand
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramAPIError
+from aiogram.client.default import DefaultBotProperties  # добавлено
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ["TOKEN"]
@@ -23,8 +24,6 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 DB_NAME = "prayers.db"
-
-print("QUQUQUQUQUQU!!!!!!!!!!!!!!!!!!1")
 
 # ---------- База данных ----------
 async def init_db():
@@ -94,7 +93,7 @@ router = Router()
 async def start_cmd(message: Message):
     user = message.from_user
     await register_user(user.id, user.username, user.full_name)
-    # ВСЕ треугольные скобки убраны — описания команд без <>
+    # Без <> в описаниях команд
     text = (
         "🙏 <b>Молитвенный бот для личного использования</b>\n\n"
         "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
@@ -154,7 +153,6 @@ async def list_cmd(message: Message):
         await message.answer(full_message)
     except TelegramAPIError as e:
         logger.error(f"Ошибка отправки списка: {e}")
-        # fallback без форматирования
         plain_lines = ["Ваши текущие молитвенные нужды:", ""]
         for pid, req_text, _ in prayers:
             plain_lines.append(f"{pid}. {req_text}")
@@ -192,7 +190,6 @@ async def settime_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) != 3:
-        # Здесь <code> безопасен, потому что «час минута» не содержит <
         await message.answer(
             "Используйте: <code>/settime час минута</code>\nПример: <code>/settime 7 30</code>"
         )
@@ -234,7 +231,6 @@ async def handle_forwarded(message: Message):
     if message.forward_from and message.forward_from.id:
         source_name = html.escape(message.forward_from.full_name or str(message.forward_from.id))
         sender_link = f'<a href="tg://user?id={message.forward_from.id}">{source_name}</a>'
-    # анонимная пересылка — sender_link остаётся None
 
     from_user = (
         f"переслано от {html.escape(message.forward_sender_name or 'неизвестный источник')} "
@@ -322,7 +318,7 @@ async def check_and_send(bot: Bot):
                 line += f"\n— {sender_link}"
             lines.append(line)
             lines.append("")
-        lines.append("После исполнения удалите командой <code>/done номер</code>")  # без < >
+        lines.append("После исполнения удалите командой <code>/done номер</code>")
 
         full_message = "\n".join(lines)
         try:
@@ -335,7 +331,8 @@ async def check_and_send(bot: Bot):
 # ---------- Запуск ----------
 async def main():
     await init_db()
-    bot = Bot(token=TOKEN, parse_mode="HTML")
+    # Исправлено: используем DefaultBotProperties для parse_mode
+    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
     dp.include_router(router)
 
