@@ -23,7 +23,7 @@ TIMEZONE = "Europe/Moscow"
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DB_NAME = "/app/shared/prayers.db"
+DB_NAME = "/app/data/prayers.db"
 
 # ---------- База данных ----------
 async def init_db():
