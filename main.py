@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import html  # fix: для безопасного экранирования
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -87,42 +88,60 @@ async def delete_prayer(user_id: int, prayer_id: int) -> bool:
 # ---------- Хендлеры ----------
 router = Router()
 
+# fix: убраны треугольные скобки из описаний команд
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     user = message.from_user
     await register_user(user.id, user.username, user.full_name)
-    # Экранируем все < и > в тексте, чтобы они не конфликтовали с HTML-режимом
-    safe_text = (
+    # Текст без <>, которые могли бы интерпретироваться как HTML-теги
+    text = (
         "🙏 <b>Молитвенный бот для личного использования</b>\n\n"
         "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
         "Если вы <b>пересылаете</b> сообщение, в конце текста автоматически добавится ссылка на профиль автора.\n"
         "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
         "Команды:\n"
         "/list — показать список текущих нужд\n"
-        "/done &lt;номер&gt; — удалить нужду (исполнена)\n"
+        "/done <b>номер</b> — удалить нужду (исполнена)\n"   # fix: <b>номер</b>, без <номер>
         "/help — справка\n"
-        "/settime &lt;час&gt; &lt;минута&gt; — установить время напоминания (например /settime 7 30)"
+        "/settime <b>час минута</b> — установить время напоминания (например /settime 7 30)"  # fix
     )
     try:
-        await message.answer(safe_text)
+        await message.answer(text)
     except TelegramAPIError as e:
         logger.error(f"Ошибка отправки start: {e}")
-        await message.answer("Произошла ошибка. Попробуйте позже.")
+        # fallback без форматирования
+        await message.answer(
+            "Молитвенный бот для личного использования.\n\n"
+            "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
+            "Если вы пересылаете сообщение, в конце текста автоматически добавится ссылка на профиль автора.\n"
+            "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
+            "Команды:\n"
+            "/list — показать список текущих нужд\n"
+            "/done номер — удалить нужду (исполнена)\n"
+            "/help — справка\n"
+            "/settime час минута — установить время напоминания (например /settime 7 30)"
+        )
 
 @router.message(Command("help"))
 async def help_cmd(message: Message):
-    safe_text = (
+    text = (
         "📖 <b>Справка</b>\n"
         "/list — список неисполненных нужд\n"
-        "/done &lt;номер&gt; — удалить нужду (она больше не будет показываться)\n"
-        "/settime &lt;час&gt; &lt;минута&gt; — изменить время напоминания (Московское время)\n"
+        "/done <b>номер</b> — удалить нужду (она больше не будет показываться)\n"  # fix
+        "/settime <b>час минута</b> — изменить время напоминания (Московское время)\n"  # fix
         "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на автора)."
     )
     try:
-        await message.answer(safe_text)
+        await message.answer(text)
     except TelegramAPIError as e:
         logger.error(f"Ошибка отправки help: {e}")
-        await message.answer("Произошла ошибка. Попробуйте позже.")
+        await message.answer(
+            "Справка:\n"
+            "/list — список неисполненных нужд\n"
+            "/done номер — удалить нужду\n"
+            "/settime час минута — изменить время\n"
+            "Пересылайте сообщения, чтобы добавить нужду."
+        )
 
 @router.message(Command("list"))
 async def list_cmd(message: Message):
@@ -140,14 +159,11 @@ async def list_cmd(message: Message):
 
     lines = ["<b>Ваши текущие молитвенные нужды:</b>", ""]
     for pid, req_text, sender_link in prayers:
-        # Экранируем текст нужды
-        safe_text = (req_text
-                     .replace("&", "&amp;")
-                     .replace("<", "&lt;")
-                     .replace(">", "&gt;"))
+        # fix: используем html.escape для полного экранирования
+        safe_text = html.escape(req_text)
         line = f"<code>{pid}</code>. {safe_text}"
         if sender_link:
-            # sender_link уже содержит экранированное имя (см. handle_forwarded)
+            # sender_link уже безопасен (содержит экранированное имя)
             line += f"\n— {sender_link}"
         lines.append(line)
         lines.append("")
@@ -156,14 +172,18 @@ async def list_cmd(message: Message):
         await message.answer(full_message)
     except TelegramAPIError as e:
         logger.error(f"Ошибка отправки списка: {e}")
-        # При ошибке отправляем без форматирования
-        await message.answer("⚠️ Не удалось отобразить список из-за ошибки форматирования.")
+        # fallback без форматирования
+        plain_lines = ["Ваши текущие молитвенные нужды:", ""]
+        for pid, req_text, _ in prayers:
+            plain_lines.append(f"{pid}. {req_text}")
+        await message.answer("\n".join(plain_lines))
 
 @router.message(Command("done"))
 async def done_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) < 2:
+        # fix: убраны треугольные скобки
         await message.answer("Укажите номер нужды: <code>/done 3</code>")
         return
     try:
@@ -191,8 +211,9 @@ async def settime_cmd(message: Message):
     user_id = message.from_user.id
     args = message.text.split()
     if len(args) != 3:
+        # fix: убраны треугольные скобки
         await message.answer(
-            "Используйте: <code>/settime &lt;час&gt; &lt;минута&gt;</code>\nПример: <code>/settime 7 30</code>"
+            "Используйте: <code>/settime час минута</code>\nПример: <code>/settime 7 30</code>"
         )
         return
     try:
@@ -219,10 +240,6 @@ async def settime_cmd(message: Message):
     await message.answer(f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва).")
 
 # --- Обработка пересланных сообщений ---
-def safe_html_name(name: str) -> str:
-    """Экранирует спецсимволы для безопасной вставки в HTML."""
-    return name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
 @router.message(F.forward_date)
 async def handle_forwarded(message: Message):
     user = message.from_user
@@ -234,14 +251,14 @@ async def handle_forwarded(message: Message):
 
     sender_link = None
     if message.forward_from and message.forward_from.id:
-        # Экранируем имя автора
-        source_name = safe_html_name(message.forward_from.full_name or str(message.forward_from.id))
+        source_name = html.escape(message.forward_from.full_name or str(message.forward_from.id))
         sender_link = f'<a href="tg://user?id={message.forward_from.id}">{source_name}</a>'
-    elif message.forward_sender_name:
-        # анонимная пересылка — оставляем None
-        pass
+    # анонимная пересылка — sender_link остаётся None
 
-    from_user = f"переслано от {safe_html_name(message.forward_sender_name or 'неизвестный источник')} (добавил {safe_html_name(user.full_name or user.username or '')})"
+    from_user = (
+        f"переслано от {html.escape(message.forward_sender_name or 'неизвестный источник')} "
+        f"(добавил {html.escape(user.full_name or user.username or '')})"
+    )
 
     try:
         prayer_id = await add_prayer(user.id, text, sender_link, from_user)
@@ -251,7 +268,8 @@ async def handle_forwarded(message: Message):
         return
 
     preview = text[:150] + "..." if len(text) > 150 else text
-    safe_preview = safe_html_name(preview)
+    # fix: экранируем preview перед вставкой в HTML
+    safe_preview = html.escape(preview)
     try:
         await message.answer(
             f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
@@ -273,7 +291,7 @@ async def handle_plain_text(message: Message):
         await message.answer("Пожалуйста, отправьте текст или перешлите сообщение.")
         return
 
-    from_user = safe_html_name(user.full_name or user.username or str(user.id))
+    from_user = html.escape(user.full_name or user.username or str(user.id))
 
     try:
         prayer_id = await add_prayer(user.id, text, sender_link=None, from_user=from_user)
@@ -283,7 +301,7 @@ async def handle_plain_text(message: Message):
         return
 
     preview = text[:150] + "..." if len(text) > 150 else text
-    safe_preview = safe_html_name(preview)
+    safe_preview = html.escape(preview)
     try:
         await message.answer(
             f"🙏 Сохранил молитвенную нужду #{prayer_id}.\n\n"
@@ -318,11 +336,7 @@ async def check_and_send(bot: Bot):
 
         lines = ["<b>🕊 Ежедневное напоминание о молитве</b>", "", "Помолитесь сегодня за эти нужды:", ""]
         for pid, req_text, sender_link in prayers:
-            # Экранируем текст нужды
-            safe_text = (req_text
-                         .replace("&", "&amp;")
-                         .replace("<", "&lt;")
-                         .replace(">", "&gt;"))
+            safe_text = html.escape(req_text)  # fix: полное экранирование
             line = f"<code>{pid}</code>. {safe_text}"
             if sender_link:
                 line += f"\n— {sender_link}"
@@ -375,4 +389,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
