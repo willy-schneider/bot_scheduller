@@ -9,7 +9,10 @@ import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, BotCommand
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.exceptions import TelegramAPIError
 from aiogram.client.default import DefaultBotProperties
 
@@ -24,6 +27,11 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 DB_NAME = "/app/data/prayers.db"
+
+# ---------- Состояния FSM ----------
+class PrayerStates(StatesGroup):
+    waiting_for_done_number = State()
+    waiting_for_settime_time = State()
 
 # ---------- База данных ----------
 async def init_db():
@@ -101,9 +109,10 @@ async def start_cmd(message: Message):
         "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
         "Команды:\n"
         "/list — показать список текущих нужд\n"
-        "/done номер — удалить нужду (исполнена). Номер – это порядковый номер из /list\n"
+        "/done — удалить нужду (исполнена). Бот запросит номер.\n"
         "/help — справка\n"
-        "/settime час минута — установить время напоминания (например /settime 7 30)"
+        "/settime — установить время напоминания (бот запросит час и минуту)\n"
+        "/cancel — отменить текущий ввод"
     )
     try:
         await message.answer(text)
@@ -116,9 +125,10 @@ async def help_cmd(message: Message):
     text = (
         "📖 <b>Справка</b>\n"
         "/list — список неисполненных нужд\n"
-        "/done номер — удалить нужду по её <b>текущему номеру</b> из списка.\n"
+        "/done — удалить нужду по её номеру. Бот попросит ввести номер отдельным сообщением.\n"
         "   Номера динамические: после удаления оставшиеся нужды перенумеруются.\n"
-        "/settime час минута — изменить время напоминания (Московское время)\n"
+        "/settime — изменить время напоминания (Московское время). Бот запросит час и минуту.\n"
+        "/cancel — отменить текущий ввод (если вы находитесь в режиме ввода номера или времени).\n"
         "\n"
         "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на автора) или просто напишите текстом."
     )
@@ -143,7 +153,6 @@ async def list_cmd(message: Message):
         return
 
     lines = ["<b>Ваши текущие молитвенные нужды:</b>", ""]
-    # Динамическая нумерация: enumerate вместо id
     for idx, (pid, req_text, sender_link) in enumerate(prayers, start=1):
         safe_text = html.escape(req_text)
         line = f"<code>{idx}</code>. {safe_text}"
@@ -162,68 +171,102 @@ async def list_cmd(message: Message):
             plain_lines.append(f"{idx}. {req_text}")
         await message.answer("\n".join(plain_lines))
 
-@router.message(Command("done"))
-async def done_cmd(message: Message):
-    user_id = message.from_user.id
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Укажите номер нужды, например: /done 3")
+# Команда отмены любого ввода
+@router.message(Command("cancel"))
+async def cancel_cmd(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.answer("Нечего отменять.")
         return
+    await state.clear()
+    await message.answer("Действие отменено. Вы можете продолжить использовать бота.")
+
+# --- /done – двухэтапное удаление ---
+@router.message(Command("done"))
+async def done_cmd(message: Message, state: FSMContext):
+    await state.set_state(PrayerStates.waiting_for_done_number)
+    await message.answer("Введите номер нужды, которую хотите отметить как исполненную (число из /list):")
+
+@router.message(PrayerStates.waiting_for_done_number)
+async def process_done_number(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    text = message.text or ""
+    # Если пользователь ввёл команду – просим отменить или ввести число
+    if text.startswith("/"):
+        await message.answer("Вы находитесь в режиме ввода номера. Для отмены используйте /cancel или введите число.")
+        return
+
     try:
-        dynamic_num = int(args[1])
+        dynamic_num = int(text.strip())
         if dynamic_num < 1:
             raise ValueError
     except ValueError:
-        await message.answer("Номер должен быть положительным целым числом.")
+        await message.answer("Номер должен быть положительным целым числом. Попробуйте ещё раз или /cancel.")
         return
 
-    # Получаем актуальный список
     try:
         prayers = await get_undone_prayers(user_id)
     except Exception as e:
         logger.error(f"Ошибка получения списка нужд: {e}")
-        await message.answer("⚠️ Не удалось выполнить операцию.")
+        await message.answer("⚠️ Не удалось получить список нужд.")
+        await state.clear()
         return
 
     if dynamic_num > len(prayers):
         await message.answer(
             f"❌ Нужда с номером {dynamic_num} не найдена. Проверьте актуальный список в /list."
         )
+        await state.clear()
         return
 
-    # Извлекаем настоящий prayer_id по динамическому номеру
-    prayer_id = prayers[dynamic_num - 1][0]  # (id, text, sender_link)
-
+    prayer_id = prayers[dynamic_num - 1][0]
     try:
         deleted = await delete_prayer(user_id, prayer_id)
     except Exception as e:
         logger.error(f"Ошибка удаления нужды: {e}")
         await message.answer("⚠️ Не удалось выполнить операцию.")
+        await state.clear()
         return
 
     if deleted:
-        await message.answer(f"✅ Нужда №{dynamic_num} удалена (молитва исполнена).\nСлава Богу!")
+        await message.answer(f"✅ Нужда №{dynamic_num} удалена (молитва исполнена). Слава Богу!")
     else:
-        await message.answer(
-            f"❌ Не удалось удалить нужду №{dynamic_num}. Возможно, она уже была удалена."
-        )
+        await message.answer("❌ Не удалось удалить нужду. Возможно, она уже была удалена.")
+    await state.clear()
 
+# --- /settime – двухэтапная установка времени ---
 @router.message(Command("settime"))
-async def settime_cmd(message: Message):
+async def settime_cmd(message: Message, state: FSMContext):
+    await state.set_state(PrayerStates.waiting_for_settime_time)
+    await message.answer(
+        "Введите час и минуту для ежедневного напоминания (Москва) в формате: ЧЧ ММ\n"
+        "Например: 7 30"
+    )
+
+@router.message(PrayerStates.waiting_for_settime_time)
+async def process_settime_time(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    args = message.text.split()
-    if len(args) != 3:
+    text = message.text or ""
+    if text.startswith("/"):
         await message.answer(
-            "Используйте: /settime час минута\nПример: /settime 7 30"
+            "Вы находитесь в режиме ввода времени. Для отмены используйте /cancel или введите два числа."
         )
         return
+
+    parts = text.strip().split()
+    if len(parts) != 2:
+        await message.answer(
+            "Пожалуйста, введите два числа через пробел: час (0–23) и минуты (0–59). Например: 7 30"
+        )
+        return
+
     try:
-        hour = int(args[1])
-        minute = int(args[2])
+        hour = int(parts[0])
+        minute = int(parts[1])
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError
     except ValueError:
-        await message.answer("Час от 0 до 23, минута от 0 до 59.")
+        await message.answer("Час от 0 до 23, минута от 0 до 59. Попробуйте снова.")
         return
 
     try:
@@ -236,9 +279,11 @@ async def settime_cmd(message: Message):
     except Exception as e:
         logger.error(f"Ошибка установки времени: {e}")
         await message.answer("⚠️ Не удалось установить время.")
+        await state.clear()
         return
 
     await message.answer(f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва).")
+    await state.clear()
 
 # --- Обработка пересланных сообщений ---
 @router.message(F.forward_date)
@@ -267,7 +312,6 @@ async def handle_forwarded(message: Message):
         await message.answer("⚠️ Не удалось сохранить нужду.")
         return
 
-    # Подтверждение без показа id
     try:
         await message.answer(
             "🙏 Сохранил молитвенную нужду.\n\n"
@@ -329,7 +373,6 @@ async def check_and_send(bot: Bot):
             continue
 
         lines = ["<b>🕊 Ежедневное напоминание о молитве</b>", "", "Помолитесь сегодня за эти нужды:", ""]
-        # Динамическая нумерация в напоминании
         for idx, (pid, req_text, sender_link) in enumerate(prayers, start=1):
             safe_text = html.escape(req_text)
             line = f"<code>{idx}</code>. {safe_text}"
@@ -337,7 +380,7 @@ async def check_and_send(bot: Bot):
                 line += f"\n— {sender_link}"
             lines.append(line)
             lines.append("")
-        lines.append("После исполнения удалите командой /done номер")
+        lines.append("После исполнения удалите командой /done")
         full_message = "\n".join(lines)
 
         try:
@@ -351,7 +394,7 @@ async def check_and_send(bot: Bot):
 async def main():
     await init_db()
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
@@ -362,6 +405,7 @@ async def main():
             BotCommand(command="list", description="Показать список молитвенных нужд"),
             BotCommand(command="done", description="Удалить нужду (исполнена)"),
             BotCommand(command="settime", description="Установить время напоминания"),
+            BotCommand(command="cancel", description="Отменить текущий ввод"),
             BotCommand(command="help", description="Помощь"),
         ]
         await bot.set_my_commands(commands)
