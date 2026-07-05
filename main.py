@@ -105,14 +105,13 @@ async def start_cmd(message: Message):
     text = (
         "🙏 <b>Молитвенный бот для личного использования</b>\n\n"
         "Просто перешлите мне любое сообщение (или напишите текст) — я сохраню его как молитвенную нужду.\n"
-        "Если вы <b>пересылаете</b> сообщение, в конце текста автоматически добавится ссылка на профиль автора.\n"
         "Каждый день в выбранное время я буду присылать список всех нужд для молитвы.\n\n"
         "Команды:\n"
         "/list — показать список текущих нужд\n"
-        "/done — удалить нужду (исполнена). Бот запросит номер.\n"
+        "/done — удалить нужду (исполнена)\n"
         "/help — справка\n"
-        "/settime — установить время напоминания (бот запросит час и минуту)\n"
-        "/cancel — отменить текущий ввод"
+        "/settime — установить время напоминания\n\n"
+        "Прекрасных вам молитв и свидетельств Божьей славы!" 
     )
     try:
         await message.answer(text)
@@ -124,13 +123,11 @@ async def start_cmd(message: Message):
 async def help_cmd(message: Message):
     text = (
         "📖 <b>Справка</b>\n"
-        "/list — список неисполненных нужд\n"
-        "/done — удалить нужду по её номеру. Бот попросит ввести номер отдельным сообщением.\n"
-        "   Номера динамические: после удаления оставшиеся нужды перенумеруются.\n"
+        "/list — список нужд\n"
+        "/done — удалить нужду. Бот попросит ввести номер нужды.\n"
         "/settime — изменить время напоминания (Московское время). Бот запросит час и минуту.\n"
-        "/cancel — отменить текущий ввод (если вы находитесь в режиме ввода номера или времени).\n"
         "\n"
-        "Пересылайте сообщения, чтобы добавить нужду (в конце будет ссылка на автора) или просто напишите текстом."
+        "Пересылайте сообщения, чтобы добавить нужду или просто напишите текстом.\n\n"
     )
     try:
         await message.answer(text)
@@ -171,37 +168,23 @@ async def list_cmd(message: Message):
             plain_lines.append(f"{idx}. {req_text}")
         await message.answer("\n".join(plain_lines))
 
-# Команда отмены любого ввода
-@router.message(Command("cancel"))
-async def cancel_cmd(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is None:
-        await message.answer("Нечего отменять.")
-        return
-    await state.clear()
-    await message.answer("Действие отменено. Вы можете продолжить использовать бота.")
-
 # --- /done – двухэтапное удаление ---
 @router.message(Command("done"))
 async def done_cmd(message: Message, state: FSMContext):
     await state.set_state(PrayerStates.waiting_for_done_number)
-    await message.answer("Введите номер нужды, которую хотите отметить как исполненную (число из /list):")
+    await message.answer("Введите номер нужды, которую хотите отметить как исполненную:")
 
 @router.message(PrayerStates.waiting_for_done_number)
 async def process_done_number(message: Message, state: FSMContext):
     user_id = message.from_user.id
     text = message.text or ""
-    # Если пользователь ввёл команду – просим отменить или ввести число
-    if text.startswith("/"):
-        await message.answer("Вы находитесь в режиме ввода номера. Для отмены используйте /cancel или введите число.")
-        return
 
     try:
         dynamic_num = int(text.strip())
         if dynamic_num < 1:
             raise ValueError
     except ValueError:
-        await message.answer("Номер должен быть положительным целым числом. Попробуйте ещё раз или /cancel.")
+        await message.answer("Номер должен быть положительным целым числом. Попробуйте ещё раз.")
         return
 
     try:
@@ -229,7 +212,8 @@ async def process_done_number(message: Message, state: FSMContext):
         return
 
     if deleted:
-        await message.answer(f"✅ Нужда №{dynamic_num} удалена (молитва исполнена). Слава Богу!")
+        await message.answer(f"✅ Нужда №{dynamic_num} удалена (молитва исполнена)\n"
+        "Слава Богу!")
     else:
         await message.answer("❌ Не удалось удалить нужду. Возможно, она уже была удалена.")
     await state.clear()
@@ -247,11 +231,6 @@ async def settime_cmd(message: Message, state: FSMContext):
 async def process_settime_time(message: Message, state: FSMContext):
     user_id = message.from_user.id
     text = message.text or ""
-    if text.startswith("/"):
-        await message.answer(
-            "Вы находитесь в режиме ввода времени. Для отмены используйте /cancel или введите два числа."
-        )
-        return
 
     parts = text.strip().split()
     if len(parts) != 2:
@@ -314,8 +293,8 @@ async def handle_forwarded(message: Message):
 
     try:
         await message.answer(
-            "🙏 Сохранил молитвенную нужду.\n\n"
-            "Я напомню о ней в ваше время молитвы."
+            "🙏 Сохранил молитвенную нужду\n\n"
+            "Я напомню о ней в ваше время молитвы"
         )
     except TelegramAPIError as e:
         logger.error(f"Ошибка отправки подтверждения: {e}")
@@ -343,8 +322,8 @@ async def handle_plain_text(message: Message):
 
     try:
         await message.answer(
-            "🙏 Сохранил молитвенную нужду.\n\n"
-            "Я напомню о ней в ваше время молитвы."
+            "🙏 Сохранил молитвенную нужду\n\n"
+            "Я напомню о ней в ваше время молитвы"
         )
     except TelegramAPIError as e:
         logger.error(f"Ошибка отправки подтверждения: {e}")
@@ -380,7 +359,7 @@ async def check_and_send(bot: Bot):
                 line += f"\n— {sender_link}"
             lines.append(line)
             lines.append("")
-        lines.append("После исполнения удалите командой /done")
+        lines.append("Удалить нужду можно командой /done")
         full_message = "\n".join(lines)
 
         try:
@@ -405,7 +384,6 @@ async def main():
             BotCommand(command="list", description="Показать список молитвенных нужд"),
             BotCommand(command="done", description="Удалить нужду (исполнена)"),
             BotCommand(command="settime", description="Установить время напоминания"),
-            BotCommand(command="cancel", description="Отменить текущий ввод"),
             BotCommand(command="help", description="Помощь"),
         ]
         await bot.set_my_commands(commands)
