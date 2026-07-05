@@ -157,7 +157,7 @@ async def list_cmd(message: Message):
             line += f"\n— {sender_link}"
         lines.append(line)
         lines.append("")
-    lines.append("Если вам нужно удалить нужду, используйте команду /done.")
+    lines.append("Если вам нужно удалить нужду, используйте команду /done")
     full_message = "\n".join(lines)
     try:
         await message.answer(full_message)
