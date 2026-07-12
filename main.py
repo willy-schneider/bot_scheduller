@@ -177,7 +177,7 @@ async def list_cmd(message: Message):
             line += f"\n— {sender_link}"
         lines.append(line)
         lines.append("")
-    lines.append("Если вам нужно удалить нужду, используйте команду /done")
+    lines.append("<it>Если вам нужно удалить нужду, используйте команду</it> /done")
     full_message = "\n".join(lines)
     try:
         await message.answer(full_message)
@@ -250,7 +250,7 @@ async def del_prayer_callback(callback: CallbackQuery):
         return
 
     await callback.answer("✅ Нужда удалена. Слава Богу!")
-    await callback.message.edit_text("✅ Нужда удалена. Слава Богу!")
+    await callback.message.edit_text("✅ Нужда удалена (молитва исполнена). Слава Богу!")
 
 
 @router.callback_query(F.data == "cancel_del")
@@ -449,7 +449,7 @@ async def check_and_send(bot: Bot):
         lines = [
             "<b>🕊 Ежедневное напоминание о молитве</b>",
             "",
-            "Помолитесь сегодня за эти нужды:",
+            "<u>Помолитесь сегодня за эти нужды:</u>",
             "",
         ]
         for idx, (pid, req_text, sender_link) in enumerate(prayers, start=1):
@@ -459,7 +459,7 @@ async def check_and_send(bot: Bot):
                 line += f"\n— {sender_link}"
             lines.append(line)
             lines.append("")
-        lines.append("Удалить нужду можно командой /done")
+        lines.append("<it>Удалить нужду можно командой</it> /done")
         full_message = "\n".join(lines)
 
         try:
