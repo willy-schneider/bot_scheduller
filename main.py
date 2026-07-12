@@ -191,7 +191,7 @@ async def list_cmd(message: Message):
         await message.answer("\n".join(plain_lines))
 
 
-# --- /done – инлайн-кнопки, удаление без подтверждения ---
+# --- /done – инлайн-кнопки, удаление без подтверждения и без перестройки списка ---
 @router.message(Command("done"))
 async def done_cmd(message: Message):
     user_id = message.from_user.id
@@ -206,7 +206,6 @@ async def done_cmd(message: Message):
         await message.answer("✅ У вас нет активных молитвенных нужд.")
         return
 
-    # Формируем инлайн-клавиатуру с кнопками для каждой нужды
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     for idx, (prayer_id, text, _) in enumerate(prayers, start=1):
         btn_text = text[:30] + ("..." if len(text) > 30 else "")
@@ -232,7 +231,6 @@ async def done_cmd(message: Message):
         await message.answer("Не удалось отобразить список.")
 
 
-# Колбэк удаления – сразу удаляет и обновляет список
 @router.callback_query(F.data.startswith("del_"))
 async def del_prayer_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -247,54 +245,14 @@ async def del_prayer_callback(callback: CallbackQuery):
 
     if not deleted:
         await callback.answer("❌ Нужда не найдена или уже удалена.", show_alert=True)
-        # на всякий случай перестраиваем клавиатуру (вдруг она устарела)
-        await rebuild_done_message(callback)
+        try:
+            await callback.message.edit_text("❌ Нужда не найдена или уже удалена.")
+        except Exception:
+            pass
         return
 
     await callback.answer("✅ Нужда удалена. Слава Богу!")
-    # Обновляем сообщение: убираем удалённый элемент из списка и кнопок
-    await rebuild_done_message(callback)
-
-
-async def rebuild_done_message(callback: CallbackQuery):
-    """Перестраивает сообщение со списком нужд после удаления."""
-    user_id = callback.from_user.id
-    try:
-        prayers = await get_undone_prayers(user_id)
-    except Exception:
-        await callback.message.edit_text("⚠️ Не удалось обновить список.")
-        return
-
-    if not prayers:
-        await callback.message.edit_text("✅ У вас нет активных молитвенных нужд.")
-        return
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-    for idx, (prayer_id, text, _) in enumerate(prayers, start=1):
-        btn_text = text[:30] + ("..." if len(text) > 30 else "")
-        keyboard.inline_keyboard.append(
-            [InlineKeyboardButton(text=f"{idx}. {btn_text}", callback_data=f"del_{prayer_id}")]
-        )
-    keyboard.inline_keyboard.append(
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_del")]
-    )
-
-    lines = ["<b>Выберите нужду для удаления:</b>", ""]
-    for idx, (pid, req_text, sender_link) in enumerate(prayers, start=1):
-        safe_text = html.escape(req_text)
-        line = f"<code>{idx}</code>. {safe_text}"
-        if sender_link:
-            line += f"\n— {sender_link}"
-        lines.append(line)
-        lines.append("")
-
-    try:
-        await callback.message.edit_text(
-            "\n".join(lines),
-            reply_markup=keyboard,
-        )
-    except TelegramAPIError as e:
-        logger.error(f"Ошибка обновления сообщения: {e}")
+    await callback.message.edit_text("✅ Нужда удалена. Слава Богу!")
 
 
 @router.callback_query(F.data == "cancel_del")
@@ -303,9 +261,20 @@ async def cancel_del_callback(callback: CallbackQuery):
     await callback.answer()
 
 
-# --- /settime – с инлайн-кнопкой отмены и очисткой клавиатуры ---
+# --- /settime – показывает текущее время, отмена удаляет исходное сообщение и уведомляет ---
 @router.message(Command("settime"))
 async def settime_cmd(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    # Получаем текущее время напоминания
+    async with aiosqlite.connect(DB_NAME) as conn:
+        cursor = await conn.execute(
+            "SELECT reminder_hour, reminder_minute FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+    current_hour, current_minute = row if row else (DEFAULT_REMINDER_HOUR, DEFAULT_REMINDER_MINUTE)
+    current_time_str = f"{current_hour:02d}:{current_minute:02d}"
+
     await state.set_state(PrayerStates.waiting_for_settime_time)
     cancel_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -313,7 +282,8 @@ async def settime_cmd(message: Message, state: FSMContext, bot: Bot):
         ]
     )
     msg = await message.answer(
-        "Введите час и минуту для ежедневного напоминания (Москва) в формате: ЧЧ ММ\n"
+        f"Текущее время напоминания: {current_time_str} (Москва)\n\n"
+        "Введите новое время в формате: ЧЧ ММ\n"
         "Например: 7 30",
         reply_markup=cancel_keyboard,
     )
@@ -323,7 +293,14 @@ async def settime_cmd(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data == "cancel_settime")
 async def cancel_settime_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("Установка времени отменена.")
+    chat_id = callback.message.chat.id
+    # Удаляем исходное сообщение с кнопкой
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        logger.debug(f"Не удалось удалить сообщение: {e}")
+    # Отправляем новое уведомление об отмене
+    await callback.bot.send_message(chat_id, "❌ Установка времени отменена.")
     await callback.answer()
 
 
@@ -361,6 +338,7 @@ async def process_settime_time(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
         return
 
+    # Убираем клавиатуру у исходного сообщения
     data = await state.get_data()
     bot_message_id = data.get("bot_message_id")
     if bot_message_id:
