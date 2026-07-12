@@ -128,8 +128,7 @@ async def start_cmd(message: Message):
         "/list — показать список текущих нужд\n"
         "/done — удалить нужду (исполнена)\n"
         "/help — справка\n"
-        "/settime — установить время напоминания\n"
-        "/cancel — отменить текущее действие\n\n"
+        "/settime — установить время напоминания\n\n"
         "Прекрасных вам молитв и свидетельств Божьей славы!"
     )
     try:
@@ -146,7 +145,6 @@ async def help_cmd(message: Message):
         "/list — список нужд\n"
         "/done — удалить нужду. Бот покажет кнопки для выбора.\n"
         "/settime — изменить время напоминания (Московское время).\n"
-        "/cancel — отменить текущее действие.\n"
         "\n"
         "Пересылайте сообщения, чтобы добавить нужду или просто напишите текстом.\n\n"
     )
@@ -265,7 +263,6 @@ async def cancel_del_callback(callback: CallbackQuery):
 @router.message(Command("settime"))
 async def settime_cmd(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
-    # Получаем текущее время напоминания
     async with aiosqlite.connect(DB_NAME) as conn:
         cursor = await conn.execute(
             "SELECT reminder_hour, reminder_minute FROM users WHERE user_id = ?",
@@ -294,12 +291,10 @@ async def settime_cmd(message: Message, state: FSMContext, bot: Bot):
 async def cancel_settime_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     chat_id = callback.message.chat.id
-    # Удаляем исходное сообщение с кнопкой
     try:
         await callback.message.delete()
     except Exception as e:
         logger.debug(f"Не удалось удалить сообщение: {e}")
-    # Отправляем новое уведомление об отмене
     await callback.bot.send_message(chat_id, "❌ Установка времени отменена.")
     await callback.answer()
 
@@ -338,7 +333,6 @@ async def process_settime_time(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
         return
 
-    # Убираем клавиатуру у исходного сообщения
     data = await state.get_data()
     bot_message_id = data.get("bot_message_id")
     if bot_message_id:
@@ -355,28 +349,6 @@ async def process_settime_time(message: Message, state: FSMContext, bot: Bot):
         f"⏰ Время ежедневного напоминания установлено на {hour:02d}:{minute:02d} (Москва)."
     )
     await state.clear()
-
-
-# --- Глобальная команда отмены ---
-@router.message(Command("cancel"))
-async def cancel_cmd(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is None:
-        await message.answer("Нет активных действий для отмены.")
-        return
-    data = await state.get_data()
-    bot_message_id = data.get("bot_message_id")
-    if bot_message_id:
-        try:
-            await message.bot.edit_message_reply_markup(
-                chat_id=message.chat.id,
-                message_id=bot_message_id,
-                reply_markup=None,
-            )
-        except Exception:
-            pass
-    await state.clear()
-    await message.answer("Действие отменено.")
 
 
 # --- Обработка пересланных сообщений ---
@@ -514,7 +486,6 @@ async def main():
             BotCommand(command="done", description="Удалить нужду (исполнена)"),
             BotCommand(command="settime", description="Установить время напоминания"),
             BotCommand(command="help", description="Помощь"),
-            BotCommand(command="cancel", description="Отменить текущее действие"),
         ]
         await bot.set_my_commands(commands)
         logger.info("Меню команд установлено")
