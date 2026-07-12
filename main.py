@@ -177,7 +177,7 @@ async def list_cmd(message: Message):
             line += f"\n— {sender_link}"
         lines.append(line)
         lines.append("")
-    lines.append("<it>Если вам нужно удалить нужду, используйте команду</it> /done")
+    lines.append("<i>Если вам нужно удалить нужду, используйте команду</i> /done")
     full_message = "\n".join(lines)
     try:
         await message.answer(full_message)
@@ -459,7 +459,7 @@ async def check_and_send(bot: Bot):
                 line += f"\n— {sender_link}"
             lines.append(line)
             lines.append("")
-        lines.append("<it>Удалить нужду можно командой</it> /done")
+        lines.append("<i>Удалить нужду можно командой</i> /done")
         full_message = "\n".join(lines)
 
         try:
